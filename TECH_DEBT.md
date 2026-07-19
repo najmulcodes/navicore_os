@@ -1,0 +1,32 @@
+# Tech Debt
+
+Scored per `engineering:tech-debt` convention: **Priority = (Impact + Risk) × (6 − Effort)**, each dimension 1–5. Higher priority = fix sooner. Nothing here is code debt yet, since no code has shipped — these are debts already implied by Phase 0 decisions, logged now so they aren't rediscovered as surprises later.
+
+| # | Item | Category | Impact | Risk | Effort | Priority | Notes |
+|---|---|---|---|---|---|---|---|
+| 9 | **Nothing in the Phase 2-6 pass has run against a live server** | Test | 5 | 5 | 3 | **30** | Highest-priority item in this file. Every check this session was registry/static-analysis level, not execution. Run the real install + migrate + seed + smoke-test cycle before trusting any of this. See CHANGELOG's Phases 2-6 entry. |
+| 10 | Better Auth route-mounting/global-prefix-exclusion unverified live | Architecture | 4 | 4 | 2 | **24** | `main.ts`'s `{ path: "auth/*path", method: ALL }` exclusion pattern (Express 5 named-wildcard syntax) has not been checked against a running server. If auth routes 404 or land at the wrong path, start here. |
+| 11 | RAG pipeline not connected — `Embedding` table has no writer | Architecture | 3 | 2 | 4 | **15** | Phase 4's search is keyword-only (Postgres FTS, real and working). Phase 6's `apps/ai-service` has no endpoint that generates embeddings and writes to `Embedding`, and no retrieval step feeds them into `/chat`. Both halves exist independently; the RAG wiring between them doesn't. |
+| 12 | Better Auth's generated schema not reconciled against hand-authored tables | Architecture | 3 | 3 | 2 | **18** | Same as ADR-002 Action Item 1, now more urgent — User/Session/Account/Verification/Organization/Member/Invitation were hand-authored from documented conventions, never diffed against real `npx @better-auth/cli generate` output. |
+| 13 | Stripe billing structurally complete, functionally unverified | Test | 3 | 3 | 2 | **18** | Checkout session creation + webhook handler are real code, correct raw-body handling — but zero requests have ever hit a real Stripe account. Tax calculation is a flat `0` placeholder, not jurisdiction-aware. |
+| 14 | "org:manage_members" permission key reused for workspace-level member management | Documentation | 1 | 1 | 1 | **8** | Cosmetic naming collision inherited from the §4 matrix — functionally correct (Owner/Admin of a workspace can manage that workspace's members) but the key name suggests org scope when it's checked via workspace-scoped PermissionGuard. Rename to `workspace:manage_members` if it causes confusion. |
+| 15 | Postgres NULL-uniqueness nuance on system Role rows | Architecture | 2 | 2 | 2 | **12** | `Role.organizationId` is nullable for system roles (Owner/Admin/Member/Guest); Postgres doesn't enforce uniqueness across multiple NULLs in the `[organizationId, name]` composite unique index. Seed script is the only writer today, so this is safe in practice — would need a non-null sentinel value if a second writer of system roles is ever introduced. |
+| 16 | No frontend auth flow, no real pages beyond one dashboard shell | Architecture | 4 | 2 | 5 | **18** | `apps/web` is Milestone 1.3's shell requirement, not a product. No Better Auth client SDK integration, no per-module pages, no data fetching. This is the natural next full session's focus. |
+| 17 | No streaming for `/chat` | Architecture | 2 | 1 | 3 | **9** | Single-turn request/response only. A real assistant UX wants token streaming; FastAPI/Anthropic both support it, just not implemented this pass. |
+| 18 | Goals/OKRs and Notifications are schema-only | Architecture | 2 | 1 | 3 | **9** | Both modeled in `prisma/schema.prisma` (Phase 2) with zero endpoints. Lowest-priority gap in the Work Management module — time tracking and the Kanban/comments/attachments core all have real endpoints. |
+| 19 | AI Layer only implements one provider | Architecture | 1 | 1 | 3 | **6** | `AIProvider` abstraction is real and swappable (docs/PHASE_0_ARCHITECTURE.md's AI Layer Design requirement), but only `AnthropicProvider` exists — the abstraction is unproven against a second implementation. |
+| 7 | Pinned to TypeScript 6.0.3 instead of 7.0 | Dependency | 2 | 1 | 1 | **15** | Deliberate: TS7 (GA July 8, 2026) broke `typescript-eslint` and `ts-jest`, both used here — fix ships in TS 7.1, not yet released. Revisit once `typescript-eslint`/`ts-jest` confirm 7.1 compatibility. Low impact/risk since 6.0.3 is fully supported, not EOL. |
+| 5 | `Guest` role and client-portal permissions exist in the Phase 0 matrix, but the portal UI itself doesn't ship until Phase 3 | Documentation | 2 | 2 | 1 | **20** | Low effort to fix: just make sure Phase 3 planning explicitly checks the matrix instead of re-deriving Guest permissions from scratch. |
+| 1 | Domain events are in-process (`EventEmitter2`), not durable | Architecture | 3 | 3 | 3 | **18** | Fine through Phase 2–6. Becomes a real problem in Phase 7, when Automation triggers need events to survive a process restart and fire across the BullMQ worker boundary, not just in-process. Fix: BullMQ-backed event relay, scoped to Phase 7. |
+| 6 | `Comment`/`Attachment` polymorphic association enforced at the application layer, not the database | Architecture | 2 | 2 | 2 | **16** | Documented limitation, not a bug (see `prisma/schema.prisma` comment). Revisit only if orphaned `entityId` rows actually show up in practice — fix would be splitting into `TaskComment`/`DealComment`. |
+| 4 | No CQRS anywhere, including the future Analytics read paths | Architecture | 1 | 1 | 4 | **4** | Intentional per the architecture principles ("CQRS only where read/write patterns genuinely diverge"). Revisit if/when Phase 9 Analytics queries start measurably straining the write-optimized schema. |
+
+## Resolved
+
+| # | Item | Resolution |
+|---|---|---|
+| 2 | Postgres hosting vendor (Supabase vs. Railway) not finalized | Confirmed Supabase, 2026-07-18. `docs/adr/004-hosting-split.md`'s rationale was corrected in the same pass — `pgvector` is not Supabase-exclusive; the real reason is one-vendor ergonomics with Storage. |
+
+## How to use this file going forward
+
+Every phase should add to this table, not just Phase 0. When a module ships with a known shortcut (a TODO left in code, a test skipped, a migration that's technically reversible but ugly), it gets a row here with the same scoring — not a comment buried in the code that nobody revisits.

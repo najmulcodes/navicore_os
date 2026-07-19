@@ -1,0 +1,883 @@
+// NAVICORE OS — Prisma schema.
+// Phase 0 MVP wedge (Core Platform + Work Management + CRM & Sales) plus
+// Phases 2-6 built out in this pass. See CHANGELOG.md for what's new.
+//
+// FK convention: relations that represent genuine ownership/composition
+// (Workspace -> Organization, WorkspaceMember -> User) are real Prisma
+// @relation fields with cascade delete. Fields that just record "who did
+// this" (createdById, assigneeId, authorId, uploadedById, actorId, ownerId,
+// changedById, inviterId, submittedById) are plain indexed scalar columns,
+// not Prisma relations — the same pattern already used for Comment/
+// Attachment's polymorphic entityId (see below). This keeps User from
+// accumulating a dozen named back-relations for what are audit fields, not
+// structural ownership. Documented once, here, rather than repeated at every
+// field.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../packages/db/generated/prisma"
+  moduleFormat = "cjs"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  extensions = [pgvector(map: "vector")]
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Better Auth core + organization plugin tables.
+// Field/table shape follows Better Auth's documented Prisma schema
+// (docs/adr/002-auth-provider.md). Hand-authored here rather than generated
+// via the CLI (sandbox network/tooling constraints — see TECH_DEBT.md) —
+// reconcile against `npx @better-auth/cli generate` output before Milestone
+// 1.2 ships for real (ADR-002, Action Item 1).
+// ─────────────────────────────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  sessions Session[]
+  accounts Account[]
+
+  // See FK convention note at the top of this file — WorkspaceMember is the
+  // one place a full relation back to User earns its keep (RBAC joins).
+  workspaceMemberships WorkspaceMember[]
+
+  @@map("user")
+}
+
+model Session {
+  id                   String   @id @default(cuid())
+  token                String   @unique
+  expiresAt            DateTime
+  ipAddress            String?
+  userAgent            String?
+  activeOrganizationId String?
+  userId               String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id @default(cuid())
+  accountId             String
+  providerId            String
+  userId                String
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id @default(cuid())
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@map("verification")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  logo      String?
+  metadata  String?
+  createdAt DateTime @default(now())
+
+  members     Member[]
+  invitations Invitation[]
+  workspaces  Workspace[]
+  subscription Subscription?
+
+  @@map("organization")
+}
+
+model Member {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           String   @default("member") // Better Auth's own coarse org role — see ADR-002 on how this differs from Role/Permission below
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@map("member")
+}
+
+model Invitation {
+  id             String   @id @default(cuid())
+  organizationId String
+  email          String
+  role           String?
+  status         String   @default("pending")
+  expiresAt      DateTime
+  inviterId      String
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@map("invitation")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Workspaces — NAVICORE's own concept, sits below Better Auth's Organization
+// ─────────────────────────────────────────────────────────────────────────
+
+model Workspace {
+  id             String    @id @default(cuid())
+  organizationId String
+  name           String
+  slug           String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  members        WorkspaceMember[]
+  projects       Project[]
+  companies      Company[]
+  contacts       Contact[]
+  deals          Deal[]
+  pipelineStages PipelineStage[]
+  activityLogs   ActivityLog[]
+  folders        Folder[]
+  fileAssets     FileAsset[]
+  documents      Document[]
+  knowledgeArticles KnowledgeArticle[]
+  embeddings     Embedding[]
+  invoices       Invoice[]
+  expenses       Expense[]
+  budgets        Budget[]
+  payments       Payment[]
+  aiConversations AiConversation[]
+
+  @@unique([organizationId, slug])
+  @@index([organizationId])
+}
+
+model WorkspaceMember {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  roleId      String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role      @relation(fields: [roleId], references: [id])
+
+  @@unique([workspaceId, userId])
+  @@index([userId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// RBAC — fine-grained permissions layered on top of Better Auth's org roles
+// ─────────────────────────────────────────────────────────────────────────
+
+model Role {
+  id             String   @id @default(cuid())
+  organizationId String? // null => system-defined role (Owner/Admin/Member/Guest), available to every org
+  name           String
+  isSystem       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  permissions      RolePermission[]
+  workspaceMembers WorkspaceMember[]
+
+  @@unique([organizationId, name])
+}
+
+model Permission {
+  id     String @id @default(cuid())
+  key    String @unique // e.g. "projects:create" — see docs/PHASE_0_ARCHITECTURE.md §4
+  module String
+  action String
+
+  roles RolePermission[]
+
+  @@index([module])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Work Management (Phase 2)
+// ─────────────────────────────────────────────────────────────────────────
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  ARCHIVED
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  workspaceId String
+  name        String
+  description String?
+  status      ProjectStatus @default(PLANNING)
+  startDate   DateTime?
+  endDate     DateTime?
+  createdById String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  deletedAt   DateTime?
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  columns   TaskStatus[]
+  tasks     Task[]
+  goals     Goal[]
+
+  @@index([workspaceId])
+  @@index([workspaceId, status])
+}
+
+model TaskStatus {
+  id        String  @id @default(cuid())
+  projectId String
+  name      String
+  order     Int
+  isDefault Boolean @default(false)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  tasks   Task[]
+
+  @@unique([projectId, order])
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Task {
+  id            String       @id @default(cuid())
+  projectId     String
+  statusId      String
+  title         String
+  description   String?
+  assigneeId    String?
+  priority      TaskPriority @default(MEDIUM)
+  dueDate       DateTime?
+  order         Int
+  createdById   String
+  estimateMins  Int? // supports Time tracking below without a separate estimate table
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  deletedAt     DateTime?
+
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status      TaskStatus   @relation(fields: [statusId], references: [id])
+  timeEntries TimeEntry[]
+
+  @@index([projectId, statusId])
+  @@index([assigneeId])
+}
+
+model TimeEntry {
+  id          String    @id @default(cuid())
+  taskId      String
+  userId      String
+  minutes     Int
+  note        String?
+  loggedAt    DateTime  @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId])
+  @@index([userId, loggedAt])
+}
+
+enum GoalStatus {
+  ON_TRACK
+  AT_RISK
+  OFF_TRACK
+  DONE
+}
+
+// OKRs — deliberately simple (single Goal + numeric progress, no nested
+// Objective/KeyResult hierarchy) for this pass. See TECH_DEBT.md.
+model Goal {
+  id          String     @id @default(cuid())
+  workspaceId String
+  projectId   String?
+  title       String
+  description String?
+  targetValue Float?
+  currentValue Float     @default(0)
+  status      GoalStatus @default(ON_TRACK)
+  dueDate     DateTime?
+  ownerId     String
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Cross-cutting: Comments, Attachments, Activity, Notifications
+// ─────────────────────────────────────────────────────────────────────────
+
+// Polymorphic (Task/Deal/Document today) — see the FK convention note and
+// docs/PHASE_0_ARCHITECTURE.md §3 for why entityId isn't a Prisma relation.
+enum CommentableType {
+  TASK
+  DEAL
+  DOCUMENT
+}
+
+model Comment {
+  id         String          @id @default(cuid())
+  entityType CommentableType
+  entityId   String
+  authorId   String
+  body       String
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  deletedAt  DateTime?
+
+  @@index([entityType, entityId])
+  @@index([authorId])
+}
+
+model Attachment {
+  id           String          @id @default(cuid())
+  entityType   CommentableType
+  entityId     String
+  storageKey   String
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String
+  createdAt    DateTime        @default(now())
+  deletedAt    DateTime?
+
+  @@index([entityType, entityId])
+}
+
+model ActivityLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  workspaceId    String
+  actorId        String
+  entityType     String
+  entityId       String
+  action         String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, createdAt])
+  @@index([entityType, entityId])
+}
+
+enum NotificationType {
+  TASK_ASSIGNED
+  COMMENT_MENTION
+  DEAL_STAGE_CHANGED
+  INVOICE_OVERDUE
+  DOCUMENT_APPROVAL_REQUESTED
+}
+
+model Notification {
+  id        String            @id @default(cuid())
+  userId    String
+  type      NotificationType
+  entityType String
+  entityId  String
+  readAt    DateTime?
+  createdAt DateTime          @default(now())
+
+  @@index([userId, readAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// CRM & Sales (Phase 3)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Company {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  domain      String?
+  industry    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  contacts  Contact[]
+  deals     Deal[]
+  invoices  Invoice[]
+
+  @@index([workspaceId])
+}
+
+model Contact {
+  id          String    @id @default(cuid())
+  workspaceId String
+  companyId   String?
+  firstName   String
+  lastName    String
+  email       String?
+  phone       String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  company   Company?  @relation(fields: [companyId], references: [id])
+  deals     Deal[]
+  invoices  Invoice[]
+
+  @@index([workspaceId])
+  @@index([companyId])
+}
+
+model PipelineStage {
+  id          String @id @default(cuid())
+  workspaceId String
+  name        String
+  order       Int
+  probability Int    @default(0)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deals     Deal[]
+
+  @@unique([workspaceId, order])
+}
+
+enum DealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+model Deal {
+  id                String     @id @default(cuid())
+  workspaceId       String
+  companyId         String?
+  contactId         String?
+  stageId           String
+  title             String
+  valueCents        Int        @default(0)
+  currency          String     @default("USD")
+  status            DealStatus @default(OPEN)
+  expectedCloseDate DateTime?
+  ownerId           String
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+  deletedAt         DateTime?
+
+  workspace    Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  company      Company?           @relation(fields: [companyId], references: [id])
+  contact      Contact?           @relation(fields: [contactId], references: [id])
+  stage        PipelineStage      @relation(fields: [stageId], references: [id])
+  stageHistory DealStageHistory[]
+
+  @@index([workspaceId, stageId])
+  @@index([ownerId])
+}
+
+model DealStageHistory {
+  id          String   @id @default(cuid())
+  dealId      String
+  fromStageId String?
+  toStageId   String
+  changedById String
+  changedAt   DateTime @default(now())
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId, changedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Knowledge & Documents (Phase 4)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Folder {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  parentFolderId String?
+  name           String
+  createdById    String
+  createdAt      DateTime @default(now())
+
+  workspace   Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parent      Folder?    @relation("FolderChildren", fields: [parentFolderId], references: [id], onDelete: Cascade)
+  children    Folder[]   @relation("FolderChildren")
+  fileAssets  FileAsset[]
+  documents   Document[]
+
+  @@index([workspaceId, parentFolderId])
+}
+
+model FileAsset {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  folderId     String?
+  storageKey   String
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder    Folder?   @relation(fields: [folderId], references: [id])
+
+  @@index([workspaceId, folderId])
+}
+
+model Document {
+  id                String    @id @default(cuid())
+  workspaceId       String
+  folderId          String?
+  title             String
+  currentVersionId  String?   @unique
+  createdById       String
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  workspace      Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder         Folder?           @relation(fields: [folderId], references: [id])
+  versions       DocumentVersion[] @relation("DocumentVersions")
+  currentVersion DocumentVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id])
+
+  @@index([workspaceId, folderId])
+}
+
+model DocumentVersion {
+  id            String   @id @default(cuid())
+  documentId    String
+  versionNumber Int
+  content       String // Markdown/rich text — moves to Supabase Storage instead of inline text if it outgrows this; see TECH_DEBT.md
+  createdById   String
+  createdAt     DateTime @default(now())
+
+  document   Document          @relation("DocumentVersions", fields: [documentId], references: [id], onDelete: Cascade)
+  asCurrent  Document?         @relation("CurrentVersion")
+  approvals  DocumentApproval[]
+
+  @@unique([documentId, versionNumber])
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model DocumentApproval {
+  id                String         @id @default(cuid())
+  documentVersionId String
+  approverId        String
+  status            ApprovalStatus @default(PENDING)
+  respondedAt       DateTime?
+  createdAt         DateTime       @default(now())
+
+  documentVersion DocumentVersion @relation(fields: [documentVersionId], references: [id], onDelete: Cascade)
+
+  @@index([documentVersionId])
+  @@index([approverId, status])
+}
+
+model KnowledgeArticle {
+  id          String    @id @default(cuid())
+  workspaceId String
+  title       String
+  slug        String
+  content     String
+  createdById String
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, slug])
+}
+
+enum EmbeddingSourceType {
+  DOCUMENT
+  KNOWLEDGE_ARTICLE
+  TASK
+  DEAL
+}
+
+// pgvector column. Prisma has no native vector type, so this uses the
+// documented `Unsupported(...)` escape hatch — Prisma Migrate will create the
+// column but NOT a vector index; add the ivfflat/hnsw index via a raw SQL
+// migration (`prisma migrate dev --create-only`, then hand-edit) before
+// Phase 6 puts real query volume through this table. See TECH_DEBT.md.
+model Embedding {
+  id          String              @id @default(cuid())
+  workspaceId String
+  sourceType  EmbeddingSourceType
+  sourceId    String
+  chunkIndex  Int                 @default(0)
+  content     String
+  embedding   Unsupported("vector(1536)")
+  createdAt   DateTime            @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, sourceType, sourceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Finance & Billing (Phase 5) — customer-facing finance + NAVICORE's own
+// platform subscription billing are deliberately separate model groups, per
+// docs/PHASE_0_ARCHITECTURE.md's Finance module description.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  OVERDUE
+  VOID
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  workspaceId    String
+  companyId      String?
+  contactId      String?
+  invoiceNumber  String
+  status         InvoiceStatus @default(DRAFT)
+  issueDate      DateTime
+  dueDate        DateTime
+  currency       String        @default("USD")
+  subtotalCents  Int           @default(0)
+  taxCents       Int           @default(0)
+  totalCents     Int           @default(0)
+  createdById    String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  deletedAt      DateTime?
+
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  company   Company?          @relation(fields: [companyId], references: [id])
+  contact   Contact?          @relation(fields: [contactId], references: [id])
+  lineItems InvoiceLineItem[]
+  payments  Payment[]
+
+  @@unique([workspaceId, invoiceNumber])
+  @@index([workspaceId, status])
+}
+
+model InvoiceLineItem {
+  id            String @id @default(cuid())
+  invoiceId     String
+  description   String
+  quantity      Int    @default(1)
+  unitPriceCents Int
+  amountCents   Int
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REIMBURSED
+}
+
+model Expense {
+  id                String        @id @default(cuid())
+  workspaceId       String
+  category          String
+  amountCents       Int
+  currency          String        @default("USD")
+  incurredAt        DateTime
+  description       String?
+  submittedById     String
+  status            ExpenseStatus @default(PENDING)
+  receiptStorageKey String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status])
+}
+
+model Budget {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  category    String?
+  amountCents Int
+  periodStart DateTime
+  periodEnd   DateTime
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, periodStart, periodEnd])
+}
+
+enum PaymentMethod {
+  CARD
+  BANK_TRANSFER
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id                    String        @id @default(cuid())
+  workspaceId           String
+  invoiceId             String?
+  amountCents           Int
+  currency              String        @default("USD")
+  method                PaymentMethod @default(CARD)
+  status                PaymentStatus @default(PENDING)
+  stripePaymentIntentId String?       @unique
+  paidAt                DateTime?
+  createdAt             DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invoice   Invoice?  @relation(fields: [invoiceId], references: [id])
+
+  @@index([workspaceId])
+}
+
+// NAVICORE's own revenue infrastructure — organization subscribes to a Plan,
+// not workspace-scoped (billing is per-org, matching Better Auth's org unit).
+enum BillingInterval {
+  MONTH
+  YEAR
+}
+
+model Plan {
+  id            String          @id @default(cuid())
+  key           String          @unique // "free" | "pro" | "business" | ...
+  name          String
+  priceCents    Int
+  currency      String          @default("USD")
+  interval      BillingInterval
+  stripePriceId String?
+  features      Json?
+
+  subscriptions Subscription[]
+}
+
+enum SubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  INCOMPLETE
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  organizationId       String             @unique
+  planId               String
+  stripeCustomerId     String?
+  stripeSubscriptionId String?            @unique
+  status               SubscriptionStatus @default(INCOMPLETE)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  plan         Plan         @relation(fields: [planId], references: [id])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// AI Layer (Phase 6) — persistence for the Assistant's conversational memory.
+// Model inference itself runs in apps/ai-service (FastAPI); this is state,
+// not compute. Stateless operations (summarization, email drafting, proposal
+// generation) don't get their own tables in this pass — see TECH_DEBT.md.
+// ─────────────────────────────────────────────────────────────────────────
+
+model AiConversation {
+  id          String   @id @default(cuid())
+  workspaceId String
+  userId      String
+  title       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  messages  AiMessage[]
+
+  @@index([workspaceId, userId])
+}
+
+enum AiMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+model AiMessage {
+  id             String        @id @default(cuid())
+  conversationId String
+  role           AiMessageRole
+  content        String
+  metadata       Json? // token usage, model id, tool calls, etc.
+  createdAt      DateTime      @default(now())
+
+  conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}

@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  # CI's Postgres/Redis services below have no pooler in front of them, so
+  # DATABASE_URL and DIRECT_URL are intentionally identical here — see
+  # .env.example and docs/adr/004-hosting-split.md, Action Item 3, for why
+  # they differ in staging/production against Supabase's Supavisor pooler.
+  DATABASE_URL: postgresql://navicore:navicore_ci@localhost:5432/navicore_os
+  DIRECT_URL: postgresql://navicore:navicore_ci@localhost:5432/navicore_os
+  REDIS_URL: redis://localhost:6379
+  API_PORT: 3001
+  NODE_ENV: test
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: navicore
+          POSTGRES_PASSWORD: navicore_ci
+          POSTGRES_DB: navicore_os
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U navicore -d navicore_os"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+
+      - name: Enable Corepack (pins pnpm to package.json's packageManager field)
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Apply migrations
+        run: pnpm db:migrate:deploy
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
+
+      - name: API e2e tests
+        run: pnpm --filter @navicore/api test:e2e

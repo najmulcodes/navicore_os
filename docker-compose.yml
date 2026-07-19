@@ -1,0 +1,42 @@
+# Local development only. Staging/production Postgres is Supabase and Redis is
+# Railway-managed — see docs/adr/004-hosting-split.md. This file exists so a
+# developer can `docker compose up -d` and get a disposable, resettable local
+# stack without touching a shared cloud resource for every schema iteration.
+#
+# The Postgres image is pgvector-enabled even though pgvector isn't turned on
+# in prisma/schema.prisma until Phase 4 — using the plain `postgres:16` image
+# now and swapping later would mean a local data migration for zero benefit
+# today; this image is a drop-in superset of stock Postgres 16.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: navicore-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: navicore
+      POSTGRES_PASSWORD: navicore_dev_only
+      POSTGRES_DB: navicore_os
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./.docker-data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U navicore -d navicore_os"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: navicore-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./.docker-data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
