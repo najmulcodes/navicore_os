@@ -1,5 +1,7 @@
 import { Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
 import { EventEmitterModule } from "@nestjs/event-emitter";
+import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { AuthModule as BetterAuthNestModule } from "@thallesp/nestjs-better-auth";
 
 import { auth } from "./lib/auth";
@@ -19,6 +21,15 @@ import { KnowledgeModule } from "./modules/knowledge/knowledge.module";
 import { FinanceModule } from "./modules/finance/finance.module";
 import { BillingModule } from "./modules/billing/billing.module";
 import { AiModule } from "./modules/ai/ai.module";
+import { AutomationModule } from "./modules/automation/automation.module";
+import { WebhooksModule } from "./modules/webhooks/webhooks.module";
+import { ApiKeysModule } from "./modules/api-keys/api-keys.module";
+import { RealtimeModule } from "./modules/realtime/realtime.module";
+import { ChannelsModule } from "./modules/channels/channels.module";
+import { ChatModule } from "./modules/chat/chat.module";
+import { AnalyticsModule } from "./modules/analytics/analytics.module";
+import { AuditModule } from "./modules/audit/audit.module";
+import { IntegrationsModule } from "./modules/integrations/integrations.module";
 
 @Module({
   imports: [
@@ -26,6 +37,16 @@ import { AiModule } from "./modules/ai/ai.module";
     // subscribe to every domain event ("task.created", "deal.stage_changed",
     // ...) via a single @OnEvent("**") — see docs/PHASE_0_ARCHITECTURE.md §2.
     EventEmitterModule.forRoot({ wildcard: true, delimiter: "." }),
+
+    // Production hardening (Phase 10): rate limiting per IP. Per-org rate
+    // limiting (also called for in docs/PHASE_0_ARCHITECTURE.md's Security
+    // section) would need a custom tracker keyed by the resolved session's
+    // organizationId/API key rather than IP — not implemented this pass,
+    // see TECH_DEBT.md. Health check and Stripe's webhook are exempted via
+    // @SkipThrottle() on their controllers (load balancer probes and
+    // Stripe's own retry bursts shouldn't count against the same limit as
+    // ordinary API traffic).
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
 
     // Mounts Better Auth's own routes (sign-up, sign-in, organization CRUD,
     // invitations, 2FA — see apps/api/src/lib/auth.ts) as Nest controllers.
@@ -64,6 +85,24 @@ import { AiModule } from "./modules/ai/ai.module";
 
     // AI Layer (Phase 6)
     AiModule,
+
+    // Automation & Integrations (Phase 7)
+    AutomationModule,
+    WebhooksModule,
+    ApiKeysModule,
+
+    // Collaboration (Phase 8)
+    RealtimeModule,
+    ChannelsModule,
+    ChatModule,
+
+    // Analytics & Reporting (Phase 9)
+    AnalyticsModule,
+
+    // Enterprise & Hardening (Phase 10)
+    AuditModule,
+    IntegrationsModule,
   ],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

@@ -1,0 +1,42 @@
+/**
+ * NAVICORE OS design tokens.
+ *
+ * CORRECTED 2026-07-23: docs/PHASE_0_ARCHITECTURE.md's original UI section
+ * pointed at Linear/Vercel/Stripe/Notion as generic reference points, and an
+ * earlier pass built apps/web against that (near-black surface, cyan+gold
+ * accent). That was wrong — this matches navicore.co's own brand system
+ * instead. If you're building any apps/web UI, import THIS file, not the
+ * old tokens. See docs/PHASE_0_ARCHITECTURE.md's UI section for the full
+ * correction note and design-tokens.md in this package for the
+ * compositional patterns (eyebrow labels, stat blocks, step indicators)
+ * that go with these tokens.
+ */
+
+@theme {
+  /* Base surfaces — navy, not near-black */
+  --color-surface: #080d17;
+  --color-surface-raised: #0d1b35;
+  --color-border: #1c2b4a;
+  --color-text: #e8ecf3;
+  --color-text-muted: #8b96ad;
+
+  /* Accent — gold only. Sparingly: CTAs and emphasis, never a background
+     fill (a full-gold button/card reads as a warning state, not a brand
+     moment — use it for text, borders, and small accents instead). */
+  --color-accent: #d4a843;
+  --color-accent-pressed: #c49a2a;
+
+  /* Display type: Plus Jakarta Sans, bold — same register as navicore.co's
+     stacked hero headline. Body: Inter. Monospace: JetBrains Mono — used for
+     KPI numbers, timestamps, API keys, and IDs throughout the product, not
+     reserved for code blocks. See design-tokens.md's "Monospace usage"
+     section for exactly where this applies.
+     var(--font-plus-jakarta-sans) etc. are Next.js's own font-loader
+     variables (see apps/web/app/layout.tsx) — listed first so apps/web gets
+     Next's font optimization (self-hosting, preload, font-display swap);
+     the plain family name is the fallback for any future non-Next consumer
+     of this token file. */
+  --font-display: var(--font-plus-jakarta-sans), "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), "JetBrains Mono", ui-monospace, monospace;
+}

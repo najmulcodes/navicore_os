@@ -50,4 +50,44 @@ export class PermissionsService {
       include: { role: true },
     });
   }
+
+  /**
+   * Phase 10 advanced permissions: checks the base role grant (hasPermission)
+   * OR a ResourcePermissionOverride for this specific resource — an override
+   * can only WIDEN access beyond the role, never narrow it (there's no
+   * "deny" override, by design; a workspace-wide role restriction can't be
+   * carved around resource-by-resource, which would make the RBAC matrix in
+   * §4 impossible to reason about).
+   *
+   * Not yet wired into any controller's @RequirePermission flow — the
+   * schema and this check both exist, but every Phase 2-6 controller still
+   * only calls the plain workspace-wide `hasPermission`. Available for a
+   * service that specifically needs it; retrofitting every existing
+   * controller wasn't in scope for this pass. See TECH_DEBT.md.
+   */
+  async hasResourcePermission(
+    userId: string,
+    workspaceId: string,
+    resourceType: string,
+    resourceId: string,
+    permissionKey: string,
+  ): Promise<boolean> {
+    if (await this.hasPermission(userId, workspaceId, permissionKey)) {
+      return true;
+    }
+
+    const override = await prisma.resourcePermissionOverride.findUnique({
+      where: {
+        workspaceId_userId_resourceType_resourceId_permissionKey: {
+          workspaceId,
+          userId,
+          resourceType,
+          resourceId,
+          permissionKey,
+        },
+      },
+    });
+
+    return override !== null;
+  }
 }

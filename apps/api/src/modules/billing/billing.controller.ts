@@ -1,4 +1,5 @@
 import { BadRequestException, Body, Controller, Headers, Param, Post, Req, UseGuards } from "@nestjs/common";
+import { SkipThrottle } from "@nestjs/throttler";
 import type { Request } from "express";
 import { OrgRoleGuard } from "../rbac/guards/org-role.guard";
 import { RequireOrgRole } from "../rbac/decorators/require-org-role.decorator";
@@ -29,6 +30,7 @@ export class BillingController {
  * handling would otherwise JSON-parse it.
  */
 @Controller("webhooks/stripe")
+@SkipThrottle()
 export class StripeWebhookController {
   constructor(private readonly billing: BillingService) {}
 

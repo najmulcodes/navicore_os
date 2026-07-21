@@ -13,7 +13,7 @@ export function Sidebar() {
   return (
     <aside className="flex w-56 flex-col border-r border-[var(--color-border)] bg-[var(--color-surface-raised)] p-4">
       <div className="mb-6 flex items-center gap-2 px-2">
-        <div className="h-2 w-2 rounded-full bg-[var(--color-navicore-cyan)]" />
+        <div className="h-2 w-2 rounded-full bg-[var(--color-accent)]" />
         <span className="font-semibold tracking-tight">NAVICORE OS</span>
       </div>
       <nav className="flex flex-col gap-0.5">

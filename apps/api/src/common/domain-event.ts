@@ -7,7 +7,12 @@
  */
 export interface DomainEvent {
   organizationId: string;
-  workspaceId: string;
+  // Nullable — org-level events (API key create/revoke, etc.) have no
+  // natural workspace to attach to. Every workspace-scoped event still
+  // passes a real string; this only widens the type, it doesn't change
+  // behavior for the vast majority of emit() call sites. See CHANGELOG's
+  // Phase 10 entry and ActivityLog's own schema comment for why.
+  workspaceId: string | null;
   actorId: string;
   entityType: string;
   entityId: string;

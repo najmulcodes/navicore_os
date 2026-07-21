@@ -77,6 +77,15 @@ const PERMISSIONS: Array<{ key: string; module: string; action: string; roles: s
   { key: "billing:manage", module: "finance", action: "billing:manage", roles: ["Owner"] },
 
   { key: "ai:use_assistant", module: "ai", action: "use_assistant", roles: ["Owner", "Admin", "Member"] },
+
+  // Phase 7 additions. api-keys deliberately has no entry here — it's
+  // org-scoped via OrgRoleGuard (organizations/:organizationId/api-keys),
+  // not workspace-scoped via PermissionGuard, so it isn't part of this
+  // workspace-level Role/Permission matrix at all. See ApiKeysController.
+  { key: "automation:manage", module: "automation", action: "manage", roles: ["Owner", "Admin"] },
+  { key: "webhooks:manage", module: "webhooks", action: "manage", roles: ["Owner", "Admin"] },
+  { key: "channels:manage", module: "channels", action: "manage", roles: ["Owner", "Admin", "Member"] },
+  { key: "analytics:manage_reports", module: "analytics", action: "manage_reports", roles: ["Owner", "Admin", "Member"] },
 ];
 
 const SYSTEM_ROLES = ["Owner", "Admin", "Member", "Guest"] as const;

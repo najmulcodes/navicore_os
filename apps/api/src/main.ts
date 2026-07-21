@@ -3,6 +3,7 @@ import "reflect-metadata";
 
 import { NestFactory } from "@nestjs/core";
 import { RequestMethod, ValidationPipe } from "@nestjs/common";
+import helmet from "helmet";
 import { loadEnv } from "@navicore/config";
 
 import { AppModule } from "./app.module";
@@ -20,6 +21,13 @@ async function bootstrap(): Promise<void> {
     // https://better-auth.com/docs/integrations/nestjs.
     bodyParser: false,
   });
+
+  // Security headers (Phase 10 hardening) — this is a JSON/SSE API, not an
+  // HTML-serving app, so helmet's defaults are used as-is rather than
+  // customizing CSP (which matters for pages rendering untrusted content,
+  // not API responses). apps/web is a separate Next.js app and would need
+  // its own CSP consideration if that becomes relevant later.
+  app.use(helmet());
 
   app.setGlobalPrefix("api/v1", {
     exclude: [

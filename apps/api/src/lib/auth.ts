@@ -43,8 +43,9 @@ export const auth = betterAuth({
   emailAndPassword: {
     enabled: true,
     // Sending real verification emails is Milestone 1.2+ follow-up work —
-    // Resend is already set up for navicore.co per prior NAVICORE Foundation
-    // work, but wiring it into Better Auth's email hooks is not done here.
+    // navicore.co's email is on Zoho Mail (not Resend — corrected 2026-07-20,
+    // an earlier comment here had this wrong), but wiring a transactional
+    // sender into Better Auth's email hooks is not done here either way.
     // Tracked in TECH_DEBT.md.
     requireEmailVerification: false,
   },

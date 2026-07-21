@@ -204,6 +204,10 @@ graph LR
 
 ---
 
+## 8.5. UI & Design System
+
+**Correction, 2026-07-23:** the original build prompt's UI guidance said "Reference points: Linear, Vercel, Stripe, Notion — not generic admin-dashboard templates." That's superseded — the actual brand direction is navicore.co's own system (navy/gold, Plus Jakarta Sans display type), not those generic references. Anyone building `apps/web` UI should start at `packages/ui/design-tokens.md`, which is now the source of truth for colors, typography, and the recurring compositional patterns (eyebrow labels, stat blocks, numbered step indicators) — not this document and not the original build prompt. `packages/ui` holds the actual token definitions (`src/tokens.css`) and three working reference components. Command palette, dark/light mode, and WCAG 2.1 AA accessibility from the original UI requirements are unaffected by this correction — only the visual reference points changed.
+
 ## 9. Phase 0 Acceptance Criteria
 
 - [x] MVP wedge (persona + 3 modules, Section 1) reviewed and confirmed as-is

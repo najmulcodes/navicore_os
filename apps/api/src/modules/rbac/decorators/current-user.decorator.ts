@@ -9,7 +9,22 @@ import type { Request } from "express";
  * user" is a much worse failure mode than a clear 401.
  */
 export const CurrentUser = createParamDecorator((_data: unknown, ctx: ExecutionContext) => {
-  const request = ctx.switchToHttp().getRequest<Request & { navicoreSession?: { user: { id: string; email: string; name: string } } }>();
+  const request = ctx
+    .switchToHttp()
+    .getRequest<
+      Request & {
+        navicoreSession?: { user: { id: string; email: string; name: string } };
+        navicoreApiKey?: { organizationId: string; apiKeyId: string };
+      }
+    >();
+
+  if (request.navicoreApiKey) {
+    throw new UnauthorizedException(
+      "This endpoint requires a user session, not an API key — API keys have no associated user " +
+        "(see lib/api-key-auth.ts). Use session auth for this route, or the endpoint needs a " +
+        "system/service-user concept it doesn't have yet.",
+    );
+  }
 
   if (!request.navicoreSession) {
     throw new UnauthorizedException(

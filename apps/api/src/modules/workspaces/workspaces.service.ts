@@ -1,9 +1,12 @@
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
+import { EventEmitter2 } from "@nestjs/event-emitter";
 import { prisma } from "@navicore/db";
 import { CreateWorkspaceDto, UpdateWorkspaceDto } from "./dto/workspace.dto";
 
 @Injectable()
 export class WorkspacesService {
+  constructor(private readonly events: EventEmitter2) {}
+
   async create(organizationId: string, dto: CreateWorkspaceDto, creatorUserId: string) {
     const existing = await prisma.workspace.findUnique({
       where: { organizationId_slug: { organizationId, slug: dto.slug } },
@@ -24,15 +27,26 @@ export class WorkspacesService {
       );
     }
 
-    return prisma.$transaction(async (tx) => {
-      const workspace = await tx.workspace.create({
+    const workspace = await prisma.$transaction(async (tx) => {
+      const created = await tx.workspace.create({
         data: { organizationId, name: dto.name, slug: dto.slug },
       });
       await tx.workspaceMember.create({
-        data: { workspaceId: workspace.id, userId: creatorUserId, roleId: ownerRole.id },
+        data: { workspaceId: created.id, userId: creatorUserId, roleId: ownerRole.id },
       });
-      return workspace;
+      return created;
     });
+
+    this.events.emit("workspace.created", {
+      organizationId,
+      workspaceId: workspace.id,
+      actorId: creatorUserId,
+      entityType: "workspace",
+      entityId: workspace.id,
+      action: "created",
+    });
+
+    return workspace;
   }
 
   async findAllForOrganization(organizationId: string) {
@@ -70,34 +84,71 @@ export class WorkspacesService {
     });
   }
 
-  async addMember(workspaceId: string, userId: string, roleName: string) {
+  /**
+   * Member add/role-change/remove are exactly the kind of action a real
+   * audit center (Phase 10) needs to surface — see AuditController. Every
+   * one of these now emits a domain event, which is new: earlier phases'
+   * WorkspacesService didn't, a real gap worth naming rather than leaving
+   * silent (member/role changes are a materially more security-sensitive
+   * event than, say, a task being renamed).
+   */
+  async addMember(workspaceId: string, userId: string, roleName: string, actorId: string) {
     const role = await prisma.role.findFirst({
       where: { organizationId: null, name: roleName, isSystem: true },
     });
     if (!role) throw new NotFoundException(`Role "${roleName}" not found`);
 
-    return prisma.workspaceMember.upsert({
+    const member = await prisma.workspaceMember.upsert({
       where: { workspaceId_userId: { workspaceId, userId } },
       update: { roleId: role.id },
       create: { workspaceId, userId, roleId: role.id },
     });
+
+    await this.emitMemberEvent(workspaceId, actorId, "member_added", { userId, role: roleName });
+    return member;
   }
 
-  async updateMemberRole(workspaceId: string, userId: string, roleName: string) {
+  async updateMemberRole(workspaceId: string, userId: string, roleName: string, actorId: string) {
     const role = await prisma.role.findFirst({
       where: { organizationId: null, name: roleName, isSystem: true },
     });
     if (!role) throw new NotFoundException(`Role "${roleName}" not found`);
 
-    return prisma.workspaceMember.update({
+    const member = await prisma.workspaceMember.update({
       where: { workspaceId_userId: { workspaceId, userId } },
       data: { roleId: role.id },
     });
+
+    await this.emitMemberEvent(workspaceId, actorId, "member_role_changed", { userId, newRole: roleName });
+    return member;
   }
 
-  async removeMember(workspaceId: string, userId: string) {
-    return prisma.workspaceMember.delete({
+  async removeMember(workspaceId: string, userId: string, actorId: string) {
+    await prisma.workspaceMember.delete({
       where: { workspaceId_userId: { workspaceId, userId } },
+    });
+
+    await this.emitMemberEvent(workspaceId, actorId, "member_removed", { userId });
+  }
+
+  private async emitMemberEvent(
+    workspaceId: string,
+    actorId: string,
+    action: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    const workspace = await prisma.workspace.findUniqueOrThrow({
+      where: { id: workspaceId },
+      select: { organizationId: true },
+    });
+    this.events.emit(`workspace_member.${action}`, {
+      organizationId: workspace.organizationId,
+      workspaceId,
+      actorId,
+      entityType: "workspace_member",
+      entityId: workspaceId,
+      action,
+      metadata,
     });
   }
 }

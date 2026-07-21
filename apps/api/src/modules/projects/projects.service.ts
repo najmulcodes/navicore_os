@@ -52,6 +52,7 @@ export class ProjectsService {
           name,
           order,
           isDefault: order === 0,
+          isTerminal: order === DEFAULT_COLUMNS.length - 1,
         })),
       });
       return created;

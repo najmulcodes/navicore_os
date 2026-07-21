@@ -115,3 +115,105 @@ Invoices (with computed line-item totals), Expenses (submit/approve/reimburse), 
 - Better Auth's route-mounting/prefix-exclusion interaction (see Milestone 1.2 above) is the single highest-risk unverified integration point — check this first.
 - `apps/web` is a shell, not a product — one page, no auth flow wired to Better Auth's client SDK, no real data fetching from `apps/api`.
 - See `TECH_DEBT.md` for the full, scored list — it grew substantially this pass and is worth reading before continuing.
+
+## [Post-pass verification] — 2026-07-20
+
+Independently verified (not by this session — by the founder, against a real running instance):
+- Stripe webhook signature handling — correct
+- `disableGlobalAuthGuard: true` — correctly relies on this codebase's own RBAC rather than Better Auth's global guard, as designed
+- No hardcoded secrets
+- `POST /api/auth/sign-up/email` resolves correctly — **TECH_DEBT.md #10 (Better Auth route-mounting risk) is resolved**, the global-prefix exclusion pattern works as written
+- Test-mode Stripe checkout completed end-to-end — **TECH_DEBT.md #13 (Stripe billing unverified) is resolved** for the checkout path (webhook event handling beyond `checkout.session.completed` still unexercised)
+
+### Corrected
+- `apps/api/src/lib/auth.ts`'s comment claimed Resend was already set up for `navicore.co` — wrong, it's Zoho Mail. Comment fixed; no code change, since email verification isn't wired up either way yet.
+
+## [Phase 7] — 2026-07-21 — Automation & Integrations
+
+### Added
+- Schema: 6 new models (`Workflow`, `WorkflowAction`, `WorkflowRun`, `WebhookSubscription`, `WebhookDelivery`, `ApiKey`) — 48 models / 18 enums total, structurally validated clean (relation integrity, brace balance, no route conflicts across all 27 controllers).
+- **Durable automation trigger relay** (`AutomationTriggerListener` → BullMQ → `AutomationProcessor`): this is the actual fix for the tech-debt item flagged all the way back in Phase 0 planning — domain events now survive a worker-process restart instead of only existing in-process via `EventEmitter2`. Same wildcard-subscription pattern as `ActivityListener`, different destination.
+- Workflow engine: triggers reuse the existing domain-event system (no new event infrastructure needed), flat-equality condition matching against event metadata (deliberately not a general rule/expression language — see TECH_DEBT.md), three action types (`CREATE_TASK`, `SEND_WEBHOOK`, `CREATE_NOTIFICATION`), append-only `WorkflowRun` audit trail.
+- Webhook delivery system: subscription CRUD (secret shown once, at creation, never retrievable after), dot-delimited event-pattern matching with wildcards (`task.*`, `*.created`), HMAC-SHA256 signed delivery via BullMQ with exponential-backoff retry — the same signing pattern this codebase already *consumes* from Stripe, now also *produced* for NAVICORE's own subscribers.
+- API keys: org-scoped Bearer-token auth (`Authorization: Bearer nvc_...`) wired into `PermissionGuard` and `OrgRoleGuard` as an alternative to session auth, exactly the "same guard, different strategy" design `docs/PHASE_0_ARCHITECTURE.md` §5 calls for. Keys are org-admin-equivalent (no per-workspace fine-grained scoping yet — deliberate simplification, see TECH_DEBT.md) since a key has no associated user to check `WorkspaceMember` roles against.
+- `QueueModule`: single shared BullMQ/Redis connection registration for both new queues, parses `REDIS_URL` rather than assuming the library accepts a raw connection string.
+- 2 new permission-matrix entries seeded (`automation:manage`, `webhooks:manage`) — `api-keys` deliberately has no workspace-RBAC entry since it's organization-scoped via `OrgRoleGuard`, not `PermissionGuard`.
+
+### Fixed during implementation
+- A real double-counting bug in `WebhookDeliveryProcessor`: a failed HTTP response was incrementing the `attempts` counter once in the success/failure branch and again in the catch block for the same actual delivery attempt. Restructured so the update happens exactly once regardless of whether the failure was an HTTP non-2xx or a network-level exception.
+
+### Verified this pass
+- `@nestjs/bullmq` (11.0.4) and `bullmq` (5.80.9) resolve on the npm registry.
+- Structural sweep across all 94 `apps/api` TypeScript files (up from 72) — 2 flagged brace-imbalances, both confirmed false positives of the checker itself (a `redis://` URL literal's `//` gets misread as a line-comment start before the checker's string-stripping runs — a bug in the check script, not the code; manually verified both files are correct).
+- Zero duplicate or conflicting route paths across all 27 controllers.
+
+### Known gaps
+- **Not run against a live server** — same caveat as the Phase 2-6 pass. The durable-queue design is sound on paper; it hasn't processed a real job yet.
+- API keys are org-admin-equivalent, not finely scoped (no per-key workspace or permission restriction).
+- Workflow conditions are flat equality only, not a real rule engine.
+- `SEND_WEBHOOK` workflow actions are fire-and-forget (no retry) — intentionally distinct from the persistent `WebhookSubscription` system, which does retry.
+- Plugin system foundation (the last item in Phase 7's module list) is not built — the original roadmap itself frames this as "foundation... marketplace (Phase 10+)," and this pass didn't get to even the foundation. Tracked in TODO.md.
+
+## [Phase 8] — 2026-07-22 — Collaboration
+
+### Added
+- Schema: `Channel`, `ChannelMember`, `ChatMessage` (with a native Postgres `String[]` for resolved mentions, not server-side @-parsing — see the model comment), plus a `CHAT_MENTION` addition to the existing `NotificationType` enum. 51 models / 18 enums total, structurally validated clean.
+- Real-time delivery via Server-Sent Events backed by **Redis pub/sub**, not an in-memory EventEmitter/Subject — this app is meant to run as more than one `apps/api` instance behind a load balancer (`docs/adr/004-hosting-split.md`), and an in-memory approach would silently drop delivery to clients connected to a different instance than the one that published the event. One shared subscriber connection per process (Redis's protocol requires a dedicated connection for subscribe mode), fanned out in-process via RxJS to however many SSE connections are observing each channel.
+- `RealtimeController`'s single SSE endpoint merges two Redis channels per connection: workspace-wide chat messages and the caller's own personal notification stream — kept separate at the Redis layer (privacy: other members' personal notifications never touch a channel a given client subscribes to) and merged only in the RxJS pipeline.
+- Channels: public (list/join freely) and private (invite-only via an explicit add-member endpoint, no public `join`) with membership tracking (`lastReadAt` present in the schema for future unread-count support, not yet exposed via an endpoint).
+- Chat: mentions are resolved by the client (an @-autocomplete picks a real user id, the same pattern Slack/Discord use) rather than guessed server-side from free text, validated against actual channel membership before the message is created, and fan out to `CHAT_MENTION` notifications delivered live over the mentioned user's personal SSE stream.
+- **Deliberate architectural choice, not an oversight:** chat messages do not emit a `DomainEvent` the way every other write path in this codebase does. High-frequency routine traffic through the same pipe that feeds `ActivityLog` and every workspace's Automation triggers would spam both. Chat gets its own dedicated real-time channel instead — the right-shaped mechanism for this kind of event.
+- `docs/adr/005-video-integration.md`: the "video-call integration planning" item from Phase 8's module list, scoped exactly as the original roadmap frames it — a provider decision (Daily.co, evaluated against LiveKit/Zoom/Whereby on integration speed, pricing shape, and fit with NAVICORE's existing per-org Stripe billing), not an implementation. `Channel.videoRoomUrl` exists in the schema as the landing spot; nothing populates it yet — tracked as the next action item in the ADR itself.
+
+### Verified this pass
+- Structural sweep across all 106 `apps/api` TypeScript files (up from 94) — zero import-resolution errors, zero duplicate/conflicting routes across all 30 controllers.
+- No new npm dependencies needed — `rxjs` (merge/filter/map operators, Subject) and `ioredis` were already in `apps/api`'s dependency tree from earlier phases.
+
+### Known gaps
+- Not run against a live server — same caveat as every phase since Milestone 1.2's live verification. The SSE/Redis pub/sub design hasn't streamed a real event to a real connected client yet.
+- Private channels are enforced at the API layer (join/list), but nothing prevents a determined client from computing the workspace-wide chat Redis channel name and subscribing directly to Redis if they had raw Redis access — not a real exposure (Redis isn't exposed to clients, only to `apps/api`), but worth naming rather than leaving implicit.
+- No unread-message count endpoint yet, despite `ChannelMember.lastReadAt` existing in the schema for exactly that.
+- No video room creation endpoint — see ADR-005's own action items.
+
+## [UI Correction] — 2026-07-23
+
+**The founder corrected the visual direction before any real frontend work happened, per their explicit instruction to "note it now so nothing gets built against the old generic reference first."** The original build prompt's UI guidance ("Reference points: Linear, Vercel, Stripe, Notion") is superseded — navicore.co's own brand system is the actual direction: navy (`#080D17`) base, elevated surfaces (`#0D1B35`), gold (`#D4A843`/`#C49A2A` pressed) as a sparing accent never used as a background fill, Plus Jakarta Sans for display type, Inter for body, JetBrains Mono for KPI numbers/timestamps/IDs (not just code).
+
+- Built `packages/ui` for real — it was referenced in the Phase 0 folder structure from the start ("design tokens... defined once in packages/ui, consumed everywhere") but never actually populated until now. `src/tokens.css` is the single source of truth; `apps/web` imports it rather than defining its own tokens.
+- Documented three recurring compositional patterns from navicore.co's own site, reused rather than invented fresh: uppercase tracked eyebrow labels, big-number-plus-small-label stat blocks (primary home: the new Analytics module's KPI cards), numbered step indicators (primary homes: onboarding and the Automation workflow builder's trigger → conditions → actions sequence). Each has a real, working component in `packages/ui/src/components/`, not just a description — `design-tokens.md` documents the full rationale.
+- Retrofitted the existing `apps/web` shell (built before this correction, under the old generic reference) onto the new tokens — quick, since the earlier work used the same token *names* (`--color-surface`, `--color-border`, etc.), just wrong *values*; only the cyan accent (never part of the correction) needed removing and one component reference updating.
+- `docs/PHASE_0_ARCHITECTURE.md` gained a new §8.5 pointing at this correction explicitly, so a future reader of the architecture doc doesn't build against the superseded reference.
+
+## [Phase 9] — 2026-07-23 — Analytics & Reporting
+
+### Added
+- Schema: `SavedReport` model.
+- `AnalyticsService`: dashboard KPI summary (open tasks, active deals, weighted pipeline value, overdue invoices — the exact four numbers `packages/ui`'s `StatBlock` component is meant to render), deals-by-stage, tasks-by-assignee, invoice aging (standard 30/60/90-day buckets).
+- Revenue forecast is a real calculation, not a placeholder: sum of each open deal's value weighted by its pipeline stage's `probability` — exactly what `PipelineStage.probability` (Phase 3) was modeled for from the start.
+- Saved reports: create/list/delete/run, dispatching to the matching `AnalyticsService` method by `SavedReportType`.
+
+### Deliberate architectural choice
+`docs/PHASE_0_ARCHITECTURE.md` flags Analytics as the one place CQRS might be justified ("only where read/write patterns genuinely diverge"). This pass does **not** build a CQRS read-model — every metric is a live Prisma aggregate query. Simple enough to be fine at current scale; a materialized/projected read model is the next step only if query load becomes a measured problem, not before. See `PERFORMANCE_REVIEW.md`.
+
+## [Phase 10] — 2026-07-23 — Enterprise & Hardening
+
+### Added
+- Schema: `ResourcePermissionOverride` (per-resource permission grants beyond a user's workspace-wide role — widens access, never narrows it), `IntegrationDefinition` + `OrganizationIntegration` (marketplace/plugin foundation, deferred here from Phase 7 per the original roadmap's own framing), plus `TaskStatus.isTerminal` (a real bug fix — see below). **55 models / 19 enums total** across both Phase 9 and 10 additions, structurally validated clean (zero relation errors, zero duplicate/conflicting routes across all 36 controllers).
+- Advanced permissions: `PermissionsService.hasResourcePermission()` checks a base role grant OR a resource-specific override. Not yet wired into any existing controller's `@RequirePermission` flow — available for a service that needs it, not retrofitted everywhere. See `TECH_DEBT.md`.
+- **Audit center**: found and fixed a real gap while building this — workspace member add/role-change/remove and API key create/revoke were security-sensitive actions that emitted no domain event at all in every earlier phase. Both now do. `AuditController` (`organizations/:organizationId/audit-log`) gives a filterable, org-wide view over `ActivityLog` — covering both workspace-scoped and the new org-only events in one place.
+- Production hardening: global IP-based rate limiting (`@nestjs/throttler`, 100 req/60s, health check and Stripe webhook exempted via `@SkipThrottle()`) and `helmet()` security headers — both explicitly called for in the Security section of `docs/PHASE_0_ARCHITECTURE.md` since Phase 0 planning, not implemented until now.
+- `docs/adr/006-sso-scim-planning.md`: SSO decision is real (`@better-auth/sso` — the natural choice given the existing all-in commitment to Better Auth, ADR-002), SCIM is explicitly left open pending verification of what Better Auth actually ships for it.
+- `docs/SECURITY_REVIEW.md`, `docs/PERFORMANCE_REVIEW.md`, `docs/LAUNCH_CHECKLIST.md` — genuine static reviews of this codebase (not a live pen-test or load test, which this sandbox can't run), with real, specific findings rather than a generic checklist.
+
+### Bug found and fixed during this pass (not by later verification — caught while writing the audit-event code)
+`ApiKeysService`'s new audit-event emission originally set `workspaceId: organizationId` as a workaround for API keys having no natural workspace — this would have caused a **foreign key violation** at write time, since `ActivityLog.workspaceId` was a required FK to `Workspace`, and an organization id is never a valid workspace id. Fixed properly, not papered over: `ActivityLog.workspaceId` is now nullable (org-level events genuinely have no workspace to attach to), `DomainEvent`'s TypeScript type widened to match, and every consumer (`ActivityListener`, `AutomationTriggerListener`, `WebhookTriggerListener`, `AutomationProcessor`) checked for correct behavior with a null value — all degrade safely to a no-op for workspace-scoped lookups against a null workspace id, none crash. Swept the rest of the codebase for the same `delete()`/`update()`-with-extra-filter-field mistake pattern that caused a similar near-miss in `PermissionOverridesService`; found and fixed one instance, confirmed no others exist.
+
+### Second bug found and fixed during the performance review
+`AnalyticsService`'s "open tasks" count matched on the literal Kanban column name `"Done"` — silently wrong for any project with a customized board. Fixed structurally: `TaskStatus.isTerminal` added, `ProjectsService`'s default-column creation and `AnalyticsService`'s query both updated. Not left as a documented-but-unfixed finding — see `PERFORMANCE_REVIEW.md` #3 and `LAUNCH_CHECKLIST.md`.
+
+### Known gaps
+- Not run against a live server — same standing caveat.
+- Per-organization rate limiting not implemented, only per-IP (needs a custom throttler tracker keyed by resolved org).
+- `hasResourcePermission` exists but isn't consumed by any controller yet.
+- SCIM is genuinely undecided, not just unimplemented — see ADR-006.
+- `npm audit`/`pnpm audit` never run this session.

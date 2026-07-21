@@ -112,6 +112,8 @@ model Organization {
   invitations Invitation[]
   workspaces  Workspace[]
   subscription Subscription?
+  apiKeys     ApiKey[]
+  integrations OrganizationIntegration[]
 
   @@map("organization")
 }
@@ -176,6 +178,10 @@ model Workspace {
   budgets        Budget[]
   payments       Payment[]
   aiConversations AiConversation[]
+  workflows      Workflow[]
+  webhookSubscriptions WebhookSubscription[]
+  channels       Channel[]
+  savedReports   SavedReport[]
 
   @@unique([organizationId, slug])
   @@index([organizationId])
@@ -273,7 +279,12 @@ model TaskStatus {
   projectId String
   name      String
   order     Int
-  isDefault Boolean @default(false)
+  isDefault Boolean @default(false) // the starting column new tasks land in
+  // Added Phase 10 — fixes a real bug found in PERFORMANCE_REVIEW.md #3:
+  // AnalyticsService's "open tasks" count originally matched on the literal
+  // column name "Done", which silently breaks for any project with a
+  // customized Kanban board. This is the structural fix.
+  isTerminal Boolean @default(false) // a "completed" column — task counts as done regardless of its name
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   tasks   Task[]
@@ -398,7 +409,12 @@ model Attachment {
 model ActivityLog {
   id             String   @id @default(cuid())
   organizationId String
-  workspaceId    String
+  // Nullable (changed from required — see CHANGELOG's Phase 10 entry):
+  // org-level events like API key create/revoke have no natural workspace
+  // to attach to. organizationId is always present regardless of whether
+  // an event is workspace- or org-scoped, so it's the field to filter/join
+  // on for an org-wide audit view — see AuditController.
+  workspaceId    String?
   actorId        String
   entityType     String
   entityId       String
@@ -406,15 +422,17 @@ model ActivityLog {
   metadata       Json?
   createdAt      DateTime @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, createdAt])
+  @@index([organizationId, createdAt])
   @@index([entityType, entityId])
 }
 
 enum NotificationType {
   TASK_ASSIGNED
   COMMENT_MENTION
+  CHAT_MENTION
   DEAL_STAGE_CHANGED
   INVOICE_OVERDUE
   DOCUMENT_APPROVAL_REQUESTED
@@ -880,4 +898,302 @@ model AiMessage {
   conversation AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Automation & Integrations (Phase 7)
+//
+// Triggers reuse the same domain events every module already emits (see
+// common/domain-event.ts) — AutomationTriggerListener subscribes the same
+// way ActivityListener does, but relays onto a durable BullMQ queue instead
+// of writing straight to Postgres, so a worker-process restart can't drop an
+// automation run. This is exactly the fix TECH_DEBT.md's original item #1
+// ("domain events are in-process, not durable... becomes a real problem in
+// Phase 7") called out during Phase 0 planning.
+// ─────────────────────────────────────────────────────────────────────────
+
+model Workflow {
+  id                String   @id @default(cuid())
+  workspaceId       String
+  name              String
+  triggerEntityType String // matches DomainEvent.entityType, e.g. "task", "deal"
+  triggerAction     String // matches DomainEvent.action, e.g. "created", "stage_changed"
+  // Simple flat equality conditions against the event's metadata, e.g.
+  // {"toStageId": "xyz"}. Not a general expression language — see
+  // TECH_DEBT.md on why this is intentionally minimal for a first pass.
+  conditions        Json?
+  isActive          Boolean  @default(true)
+  createdById       String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actions   WorkflowAction[]
+  runs      WorkflowRun[]
+
+  @@index([workspaceId, triggerEntityType, triggerAction, isActive])
+}
+
+enum WorkflowActionType {
+  CREATE_TASK
+  SEND_WEBHOOK
+  CREATE_NOTIFICATION
+}
+
+model WorkflowAction {
+  id         String             @id @default(cuid())
+  workflowId String
+  order      Int
+  actionType WorkflowActionType
+  // Shape depends on actionType — e.g. CREATE_TASK: {"projectId": "...",
+  // "title": "..."}. Validated at the application layer (see
+  // modules/automation/actions/*.ts), not by the database.
+  config     Json
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, order])
+}
+
+enum WorkflowRunStatus {
+  SUCCESS
+  FAILED
+}
+
+// Append-only audit trail of automation executions, same pattern as
+// ActivityLog and DealStageHistory elsewhere in this schema.
+model WorkflowRun {
+  id             String            @id @default(cuid())
+  workflowId     String
+  status         WorkflowRunStatus
+  triggerPayload Json
+  error          String?
+  startedAt      DateTime          @default(now())
+  finishedAt     DateTime?
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId, startedAt])
+}
+
+model WebhookSubscription {
+  id           String    @id @default(cuid())
+  workspaceId  String
+  url          String
+  secret       String // HMAC-SHA256 signs the payload — see modules/webhooks/webhooks.service.ts
+  // Dot-delimited pattern matched against "${entityType}.${action}", "*"
+  // wildcard supported at either segment, e.g. "task.*" or "*.created".
+  eventPattern String
+  isActive     Boolean   @default(true)
+  createdById  String
+  createdAt    DateTime  @default(now())
+
+  workspace  Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  deliveries WebhookDelivery[]
+
+  @@index([workspaceId, isActive])
+}
+
+enum WebhookDeliveryStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model WebhookDelivery {
+  id             String                @id @default(cuid())
+  subscriptionId String
+  eventType      String
+  payload        Json
+  status         WebhookDeliveryStatus @default(PENDING)
+  attempts       Int                   @default(0)
+  responseStatus Int?
+  lastAttemptAt  DateTime?
+  createdAt      DateTime              @default(now())
+
+  subscription WebhookSubscription @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+
+  @@index([subscriptionId, status])
+}
+
+// Org-scoped (not workspace-scoped) — matches how the public REST API's
+// Bearer-token auth resolves an organization first, same as OrgRoleGuard.
+// See docs/PHASE_0_ARCHITECTURE.md §5: "Bearer PAT for the public REST API
+// (Phase 7)... same guard, different strategy, so the authorization logic
+// doesn't fork."
+model ApiKey {
+  id          String    @id @default(cuid())
+  organizationId String
+  name        String
+  hashedKey   String    @unique // SHA-256 of the actual key — the raw key is shown once, at creation
+  keyPrefix   String // first 8 chars of the raw key, for display/identification without exposing the hash
+  scopes      Json? // reserved for finer-grained scoping — see TECH_DEBT.md, keys are org-admin-equivalent for now
+  lastUsedAt  DateTime?
+  createdById String
+  createdAt   DateTime  @default(now())
+  revokedAt   DateTime?
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, revokedAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Collaboration (Phase 8)
+//
+// Real-time delivery (new ChatMessages, and Notifications generally) is via
+// Server-Sent Events backed by Redis pub/sub — see
+// modules/realtime/realtime.service.ts. Nothing about real-time delivery is
+// modeled here in the schema; these tables are just the durable record of
+// what was sent, same as everywhere else in this schema.
+// ─────────────────────────────────────────────────────────────────────────
+
+model Channel {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  slug        String
+  isPrivate   Boolean   @default(false)
+  // Video-call planning (Phase 0 §Modules: "video-call integration
+  // planning... embed an existing provider — don't build video infra").
+  // Populated by ChatModule calling out to whichever provider
+  // docs/adr/005-video-integration.md settles on — null until a meeting is
+  // actually started in this channel. See TECH_DEBT.md: no provider is
+  // actually wired up yet, this is the schema half of the "planning" scope.
+  videoRoomUrl String?
+  createdById String
+  createdAt   DateTime  @default(now())
+  deletedAt   DateTime?
+
+  workspace Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members   ChannelMember[]
+  messages  ChatMessage[]
+
+  @@unique([workspaceId, slug])
+}
+
+model ChannelMember {
+  id         String    @id @default(cuid())
+  channelId  String
+  userId     String
+  joinedAt   DateTime  @default(now())
+  lastReadAt DateTime?
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([userId])
+}
+
+model ChatMessage {
+  id        String    @id @default(cuid())
+  channelId String
+  authorId  String
+  content   String
+  // Resolved by the client (an @mention autocomplete picks a real user, the
+  // same way Slack/Discord work) rather than server-side username parsing —
+  // see modules/chat/chat.service.ts. Validated against ChannelMember before
+  // the message is created.
+  mentionedUserIds String[]
+  createdAt DateTime  @default(now())
+  editedAt  DateTime?
+  deletedAt DateTime?
+
+  channel Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@index([channelId, createdAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Analytics & Reporting (Phase 9)
+//
+// Deliberately NOT a CQRS read-model / event-sourced projection, despite
+// docs/PHASE_0_ARCHITECTURE.md flagging Analytics as the one place CQRS
+// might apply ("only where read/write patterns genuinely diverge"). Every
+// metric in modules/analytics is a live aggregate query (Prisma
+// groupBy/aggregate) against the existing tables — simple enough at current
+// scale that a materialized/projected read model isn't justified yet. See
+// TECH_DEBT.md for the revisit trigger.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum SavedReportType {
+  DEALS_BY_STAGE
+  TASKS_BY_ASSIGNEE
+  INVOICE_AGING
+  REVENUE_FORECAST
+}
+
+model SavedReport {
+  id          String          @id @default(cuid())
+  workspaceId String
+  name        String
+  type        SavedReportType
+  // Report-type-specific filters (date range, project/pipeline scoping,
+  // etc.) — shape depends on `type`, validated at the application layer,
+  // same pattern as WorkflowAction.config. See modules/analytics/reports/*.
+  filters     Json?
+  createdById String
+  createdAt   DateTime        @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Enterprise & Hardening (Phase 10)
+// ─────────────────────────────────────────────────────────────────────────
+
+// Advanced permissions: a per-resource grant on top of the workspace-wide
+// Role/Permission system (docs/PHASE_0_ARCHITECTURE.md §4) — e.g. a Member
+// given elevated access to one specific Project or Deal without promoting
+// them to Admin workspace-wide. Checked as an ADDITIONAL grant in
+// PermissionsService, never a restriction — it can only widen what a role
+// already allows, not narrow it. See modules/rbac/permissions.service.ts.
+model ResourcePermissionOverride {
+  id             String   @id @default(cuid())
+  workspaceId    String
+  userId         String
+  resourceType   String // "project" | "deal" | ... — matches DomainEvent.entityType conventions elsewhere
+  resourceId     String
+  permissionKey  String // matches Permission.key, e.g. "projects:manage_members"
+  grantedById    String
+  createdAt      DateTime @default(now())
+
+  @@unique([workspaceId, userId, resourceType, resourceId, permissionKey])
+  @@index([workspaceId, userId])
+}
+
+// Marketplace/plugin foundation — deferred from Phase 7 to here per the
+// original roadmap's own framing ("plugin system foundation... marketplace
+// (Phase 10+)"). This is genuinely just the foundation: a registry of what
+// integrations exist and which organizations have enabled them. No plugin
+// runtime, no sandboxing, no third-party developer platform — see
+// TECH_DEBT.md for what a real implementation would need.
+model IntegrationDefinition {
+  id          String   @id @default(cuid())
+  key         String   @unique // "slack", "github", "google-drive", ...
+  name        String
+  description String?
+  isEnabled   Boolean  @default(true) // platform-level kill switch, not per-org
+  createdAt   DateTime @default(now())
+
+  installations OrganizationIntegration[]
+}
+
+model OrganizationIntegration {
+  id                      String   @id @default(cuid())
+  organizationId          String
+  integrationDefinitionId String
+  // Provider-specific state (OAuth tokens, webhook URLs, config) — shape
+  // depends entirely on the integration, same Json-escape-hatch pattern as
+  // WorkflowAction.config elsewhere in this schema.
+  config                  Json?
+  installedById           String
+  installedAt             DateTime @default(now())
+
+  organization Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  integration  IntegrationDefinition  @relation(fields: [integrationDefinitionId], references: [id])
+
+  @@unique([organizationId, integrationDefinitionId])
 }

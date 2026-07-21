@@ -63,8 +63,12 @@ export class WorkspacesController {
 
   @Post("members")
   @RequirePermission("org:manage_members")
-  addMember(@Param("workspaceId") workspaceId: string, @Body() dto: AddWorkspaceMemberDto) {
-    return this.workspaces.addMember(workspaceId, dto.userId, dto.role);
+  addMember(
+    @Param("workspaceId") workspaceId: string,
+    @Body() dto: AddWorkspaceMemberDto,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.workspaces.addMember(workspaceId, dto.userId, dto.role, user.id);
   }
 
   @Patch("members/:userId")
@@ -73,13 +77,18 @@ export class WorkspacesController {
     @Param("workspaceId") workspaceId: string,
     @Param("userId") userId: string,
     @Body() dto: UpdateWorkspaceMemberDto,
+    @CurrentUser() user: { id: string },
   ) {
-    return this.workspaces.updateMemberRole(workspaceId, userId, dto.role);
+    return this.workspaces.updateMemberRole(workspaceId, userId, dto.role, user.id);
   }
 
   @Delete("members/:userId")
   @RequirePermission("org:manage_members")
-  removeMember(@Param("workspaceId") workspaceId: string, @Param("userId") userId: string) {
-    return this.workspaces.removeMember(workspaceId, userId);
+  removeMember(
+    @Param("workspaceId") workspaceId: string,
+    @Param("userId") userId: string,
+    @CurrentUser() user: { id: string },
+  ) {
+    return this.workspaces.removeMember(workspaceId, userId, user.id);
   }
 }
