@@ -4,8 +4,12 @@
   "globalEnv": ["NODE_ENV"],
   "globalDependencies": ["prisma/schema.prisma"],
   "tasks": {
+    "db:generate": {
+      "cache": false,
+      "outputs": ["packages/db/generated/prisma/client/**"]
+    },
     "build": {
-      "dependsOn": ["^build"],
+      "dependsOn": ["^build", "db:generate"],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "dev": {
