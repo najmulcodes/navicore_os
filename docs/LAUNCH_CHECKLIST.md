@@ -8,6 +8,9 @@ Everything below is pulled from `CHANGELOG.md` and `TECH_DEBT.md` across all ten
 - [ ] Reconcile the hand-authored Better Auth tables against real `npx @better-auth/cli generate` output (`TECH_DEBT.md` #12) — this is the schema Better Auth actually depends on to function; a mismatch here breaks auth entirely, not just degrades it.
 - [ ] Add a MIME-type allowlist to file uploads (`SECURITY_REVIEW.md` #1) — currently any file type is accepted.
 - [x] Fix `TaskStatus`'s completion heuristic (`PERFORMANCE_REVIEW.md` #3) — done in this same pass, not deferred: `isTerminal` field added, `ProjectsService` and `AnalyticsService` updated.
+- [x] Railway build command fixed — see `docs/DEPLOYMENT.md`; was bypassing Turborepo, causing every `Cannot find module '@navicore/db'` deploy failure.
+- [x] `sharp`/`fast-uri` high-severity dependency vulnerabilities patched via `pnpm.overrides` (root `package.json`) — confirmed against a live vulnerability database.
+- [x] Three `tsconfig.json`/`tsconfig.build.json` build bugs fixed (multer types, dead baseUrl, missing build-specific tsconfig excluding spec files).
 
 ## Should-do before charging real customers
 

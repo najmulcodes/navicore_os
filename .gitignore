@@ -16,7 +16,6 @@ packages/db/generated/
 .env.local
 .env.*.local
 .env.production
-
 # Logs
 *.log
 npm-debug.log*
