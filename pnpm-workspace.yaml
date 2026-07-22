@@ -1,3 +1,18 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# Security-patch overrides. As of pnpm 11, `overrides` under package.json's
+# "pnpm" key is silently ignored (no error, no deprecation warning — see
+# https://github.com/pnpm/pnpm/issues/11536, tracked as a security-critical
+# regression by pnpm's own maintainers). This is the correct location now.
+# All five verified against a live vulnerability database (OSV) — see
+# CHANGELOG.md's "Deploy fixes" entry. sharp/fast-uri have active
+# high-severity advisories with fixes available; file-type/@hono/node-server/
+# postcss are transitive through dev tooling, pinned regardless.
+overrides:
+  sharp: "^0.35.3"
+  fast-uri: "^4.1.1"
+  file-type: "^22.0.1"
+  "@hono/node-server": "^2.0.11"
+  postcss: "^8.5.21"
