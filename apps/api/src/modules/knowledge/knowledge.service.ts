@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from "@nestjs/common";
 import { prisma } from "@navicore/db";
 import { CreateKnowledgeArticleDto, UpdateKnowledgeArticleDto } from "./dto/knowledge.dto";
 
-interface SearchResult {
+export interface SearchResult {
   id: string;
   title: string;
   type: "knowledge_article" | "document";

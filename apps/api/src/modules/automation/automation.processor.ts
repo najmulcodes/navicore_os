@@ -16,6 +16,10 @@ export class AutomationProcessor extends WorkerHost {
   async process(job: Job<DomainEvent>): Promise<void> {
     const event = job.data;
 
+    // Org-level events (no workspaceId) have no workspace-scoped workflow to
+    // match against — automation triggers are always workspace-scoped.
+    if (!event.workspaceId) return;
+
     const workflows = await prisma.workflow.findMany({
       where: {
         workspaceId: event.workspaceId,

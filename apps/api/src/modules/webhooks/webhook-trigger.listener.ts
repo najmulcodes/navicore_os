@@ -20,6 +20,10 @@ export class WebhookTriggerListener {
     const eventType = `${event.entityType}.${event.action}`;
     void eventName; // intentionally unused — see comment above
 
+    // Org-level events (no workspaceId) have no workspace-scoped subscription
+    // to match against — webhook subscriptions are always workspace-scoped.
+    if (!event.workspaceId) return;
+
     const subscriptions = await prisma.webhookSubscription.findMany({
       where: { workspaceId: event.workspaceId, isActive: true },
     });

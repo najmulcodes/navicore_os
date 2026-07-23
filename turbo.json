@@ -6,7 +6,7 @@
   "tasks": {
     "db:generate": {
       "cache": false,
-      "outputs": ["packages/db/generated/prisma/client/**"]
+      "outputs": ["packages/db/src/generated/prisma/**"]
     },
     "build": {
       "dependsOn": ["^build", "db:generate"],

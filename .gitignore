@@ -9,7 +9,7 @@ dist/
 
 # Prisma 7's generated client — regenerated via `pnpm db:generate`, not committed.
 # See packages/db/README (Milestone 1.1) for why this lives under packages/db.
-packages/db/generated/
+packages/db/src/generated/
 
 # Env files — .env.example is the only one committed
 .env
