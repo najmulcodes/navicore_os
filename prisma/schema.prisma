@@ -15,6 +15,11 @@
 
 generator client {
   provider = "prisma-client"
+  // Must be under packages/db/src/ — packages/db/tsconfig.json's rootDir is
+  // "src" with include: ["src/**/*.ts"], so an output path outside src/
+  // (as this originally was) puts the generated client outside TypeScript's
+  // compilation scope entirely. Confirmed via a real build failure and
+  // fixed 2026-07-24 — see CHANGELOG.
   output   = "../packages/db/src/generated/prisma"
   moduleFormat = "cjs"
   previewFeatures = ["postgresqlExtensions"]

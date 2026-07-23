@@ -1,47 +1,50 @@
-# NAVICORE OS
+# @navicore/db
 
-AI-first Business Operating System — project management, CRM, finance, knowledge management, automation, and collaboration in one platform.
+Thin wrapper around Prisma 7's generated client, so the rest of the monorepo
+imports a normal workspace package (`@navicore/db`) instead of reaching into a
+generated-code folder with relative paths.
 
-**Current status: all ten phases of the original roadmap are built.** Core Platform (auth/RBAC/workspaces), Work Management, CRM & Sales, Knowledge & Documents, Finance & Billing, AI Layer, Automation & Integrations, Collaboration, Analytics & Reporting, and Enterprise & Hardening all have real, working code against a 55-model schema. **Most of it has not run against a live server** — see `docs/LAUNCH_CHECKLIST.md`, which is the actual authoritative "what's safe to trust vs. what needs verification" document, built by consolidating every finding across all ten phases. Read that before `apps/web` or anything else.
+## Why this package exists (flagged deviation from Phase 0)
 
-## Before you run anything
+`docs/PHASE_0_ARCHITECTURE.md` §6's approved folder structure listed only
+`packages/ui`, `packages/types`, and `packages/config`. This package is an
+addition made during Phase 1 Milestone 1.1, not something the founder signed
+off on by name — flagged here rather than silently expanding scope.
 
-```bash
-corepack enable
-pnpm install
-cp .env.example .env                    # fill in BETTER_AUTH_SECRET at minimum (openssl rand -base64 32)
-docker compose up -d                     # local Postgres (pgvector-ready) + Redis
-pnpm db:generate
-pnpm db:migrate:dev
-pnpm db:seed                             # seeds the full RBAC permission matrix + a demo org/workspace
-pnpm dev                                 # or: pnpm --filter @navicore/api dev
-curl localhost:3001/health               # should return {"status":"ok",...}
+The reason it exists: Prisma 7 requires an explicit `output` path for the
+generated client (see `docs/adr/003-orm-and-database.md`'s Milestone 1.1
+correction) and requires the application to construct the client itself with
+a driver adapter — there's no more implicit `new PrismaClient()` that just
+works. Routing that output into its own package, with one file that does the
+adapter/pool setup once, means:
+
+- `apps/api` (and later `apps/ai-service` calling into it, or a future worker
+  process) all import `@navicore/db` and get the same configured singleton,
+  instead of each re-implementing driver-adapter setup.
+- The generated code (`src/generated/`, gitignored — see root `.gitignore`)
+  has exactly one place it's imported from directly (`src/index.ts`), so if
+  Prisma's generator output shape changes again, one file changes. It lives
+  under `src/`, not as a sibling of it — has to, for this package's own
+  `tsconfig.json` (`rootDir: "src"`) to include it in compilation. This was
+  wrong in an earlier version (output landed outside `rootDir`, silently
+  broke the build) — fixed 2026-07-24.
+
+## Usage
+
+```ts
+import { prisma } from "@navicore/db";
+
+const org = await prisma.organization.findUnique({ where: { id } });
 ```
 
-To actually use auth/CRM/etc. beyond the health check: sign up via `POST /api/auth/sign-up/email`, then `SEED_DEMO_USER_EMAIL=you@example.com pnpm db:seed` to attach yourself to the demo workspace as Owner.
+`prisma` is a lazily-created singleton (see `src/index.ts`) backed by
+`@prisma/adapter-pg` against `DATABASE_URL` — the **pooled** Supavisor
+connection in staging/production, plain local Postgres in dev. It is not the
+same connection Prisma Migrate uses; see `prisma.config.ts` at the repo root
+and `docs/adr/004-hosting-split.md` Action Item 3.
 
-Optional, module-specific (each fails clearly, not silently, if unset and you hit that endpoint):
-- `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` — file uploads
-- `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` — platform billing
-- `ANTHROPIC_API_KEY` (in `apps/ai-service/.env`) + `INTERNAL_AI_API_KEY` (both sides) — AI Assistant
+## Regenerating the client
 
-## What's in here
-
-| Path | What it is |
-|---|---|
-| `docs/PHASE_0_ARCHITECTURE.md`, `docs/adr/` | Architecture, ADRs (6, all Accepted except SCIM's open decision in ADR-006) |
-| `docs/LAUNCH_CHECKLIST.md` | **Start here.** Consolidated, ordered list of what to verify/fix before real users |
-| `docs/SECURITY_REVIEW.md`, `docs/PERFORMANCE_REVIEW.md` | Genuine static reviews with specific findings, not generic checklists |
-| `prisma/schema.prisma` | 55 models / 19 enums — every phase's data model |
-| `packages/ui` | Design tokens (navicore.co's actual brand — see `design-tokens.md`) + reference components |
-| `packages/config`, `packages/db` | Shared env validation, Prisma client |
-| `apps/api` | NestJS 11 — every module across all ten phases (see `src/modules/`) |
-| `apps/ai-service` | FastAPI — provider-agnostic AI routing, `/chat`, `/summarize` |
-| `apps/web` | Next.js 16 — shell only, now on the corrected brand tokens |
-| `CHANGELOG.md` | Full history, including every correction and bug found along the way |
-| `TODO.md` | Working backlog — `LAUNCH_CHECKLIST.md` is the filtered, ordered version |
-| `TECH_DEBT.md` | Every tracked gap, scored by impact × risk against effort |
-
-## Next step
-
-Work through `docs/LAUNCH_CHECKLIST.md` in order. The blocking items are genuinely blocking (specific failure modes, not vague caution); everything else is scored and sequenced.
+```bash
+pnpm db:generate   # run from repo root after any prisma/schema.prisma change
+```

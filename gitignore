@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.next/
+.turbo/
+
+# Prisma 7's generated client — regenerated via `pnpm db:generate`, not committed.
+# Lives under src/ (not a sibling of it) so it's inside packages/db's tsconfig
+# rootDir — see schema.prisma's generator comment. Fixed 2026-07-24, was
+# previously outside rootDir and broke the build.
+packages/db/src/generated/
+
+# Env files — .env.example is the only one committed
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+
+# Test coverage
+coverage/
+
+# Docker local volumes (see docker-compose.yml)
+.docker-data/
